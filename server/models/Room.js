@@ -10,6 +10,19 @@ class Room {
     };
   }
 
+  addUser(socketId, username) {
+  // If there is no active host or room is empty, make this user the HOST
+  const isFirstUser = this.members.size === 0 || !this.hostId;
+  const role = isFirstUser ? 'HOST' : 'PARTICIPANT';
+
+  if (isFirstUser) {
+    this.hostId = socketId;
+  }
+
+  const user = { socketId, username, role };
+  this.members.set(socketId, user);
+  return user;
+}
   addParticipant(socketId, username, role = 'PARTICIPANT') {
     this.participants.set(socketId, {
       userId: socketId,
