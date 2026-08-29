@@ -53,7 +53,7 @@ export default function VideoPlayer({ videoId, userRole, socket }) {
       setTimeout(() => { isSyncing.current = false; }, 500);
     });
 
-    // Floating reaction with sender's username
+
     socket.on('new_reaction', ({ id, emoji, username }) => {
       setReactions((prev) => [
         ...prev,
@@ -61,7 +61,7 @@ export default function VideoPlayer({ videoId, userRole, socket }) {
           id,
           emoji,
           username: username || 'Guest',
-          left: Math.random() * 65 + 15 // Keeps animations within safe screen margins
+          left: Math.random() * 65 + 15 
         }
       ]);
 
@@ -80,18 +80,13 @@ export default function VideoPlayer({ videoId, userRole, socket }) {
   }, [socket]);
 
   if (!videoId) {
-    return (
-      <div className="empty-player-state">
-        <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>🎬</div>
-        <h3 style={{ color: '#f8fafc', margin: '0 0 0.5rem 0' }}>No Video Loaded</h3>
-        <p style={{ margin: 0, fontSize: '0.9rem', color: '#94a3b8' }}>
-          {canControl 
-            ? 'Paste a YouTube link below and click "Load Video" to start watching.' 
-            : 'Waiting for the Host to load a video...'}
-        </p>
-      </div>
-    );
-  }
+  return (
+    <div className="empty-player-placeholder" style={{ textAlign: 'center', padding: '60px 20px', background: '#18181b', borderRadius: '12px', color: '#a1a1aa' }}>
+      <h3>No Video Selected</h3>
+      <p>Enter a YouTube URL below and load a video to start the watch party.</p>
+    </div>
+  );
+}
 
   return (
     <div className="player-wrapper">
@@ -114,7 +109,7 @@ export default function VideoPlayer({ videoId, userRole, socket }) {
         onReady={onReady}
       />
 
-      {/* Floating Reactions Layer */}
+      {/* Floating Reactions  */}
       <div className="floating-reactions-layer">
         {reactions.map((r) => (
           <div 

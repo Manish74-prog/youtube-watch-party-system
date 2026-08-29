@@ -1,229 +1,181 @@
-require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const { createClient } = require('redis');
-const { createAdapter } = require('@socket.io/redis-adapter');
-const roomManager = require('./managers/RoomManager');
 
 const app = express();
 app.use(cors());
 
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: '*', methods: ['GET', 'POST'] }
+app.get('/', (req, res) => {
+  res.send('YouTube Watch Party Backend is Live!');
 });
 
-const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-const pubClient = createClient({ url: REDIS_URL });
-const subClient = pubClient.duplicate();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  }
+});
+
+// Safe Redis handling (only connects if remote REDIS_URL environment variable is defined)
+if (process.env.REDIS_URL) {
+  try {
+    const { createClient } = require('redis');
+    const { createAdapter } = require('@socket.io/redis-adapter');
+    const pubClient = createClient({ url: process.env.REDIS_URL });
+    const subClient = pubClient.duplicate();
+
+    Promise.all([pubClient.connect(), subClient.connect()])
+      .then(() => {
+        io.adapter(createAdapter(pubClient, subClient));
+        console.log('Connected to Redis Adapter');
+      })
+      .catch((err) => {
+        console.warn('Redis connection failed. Running in memory mode:', err.message);
+      });
+  } catch (e) {
+    console.warn('Redis initialization skipped. Running in memory mode.');
+  }
+}
+
+// In-Memory Room Store
+const rooms = new Map();
 
 io.on('connection', (socket) => {
-  // Join Room
-  // Join Room Event
-  socket.on('join_room', ({ roomId, username }) => {
-    let room = roomManager.getRoom(roomId);
-    let assignedRole = 'PARTICIPANT';
+  console.log('Client connected:', socket.id);
 
-    if (!room || room.participants.size === 0) {
-      room = roomManager.createRoom(roomId, socket.id, username);
-      assignedRole = 'HOST';
-    } else {
-      room.addParticipant(socket.id, username, 'PARTICIPANT');
-      assignedRole = 'PARTICIPANT';
-    }
+  // 1. Join or Create Room
+  socket.on('join_room', ({ roomId, username }) => {
+    if (!roomId || !username) return;
 
     socket.join(roomId);
 
-    const participantsList = room.getParticipantList();
-
-    // Send complete initial state snapshot to joiner
-    socket.emit('sync_state', {
-      ...room.getCalculatedState(),
-      role: assignedRole,
-      participants: participantsList
-    });
-
-    // Notify room of new participant
-    io.to(roomId).emit('user_joined', {
-      userId: socket.id,
-      username,
-      role: assignedRole,
-      participants: participantsList
-    });
-  
-
-
-    socket.emit('sync_state', {
-      ...room.videoState,
-      role: assignedRole,
-      participants: room.getParticipantList()
-    });
-
-    io.to(roomId).emit('user_joined', {
-      userId: socket.id,
-      username,
-      role: assignedRole,
-      participants: room.getParticipantList()
-    });
-  });
-
-  // Playback Control Handlers
-  const handlePlaybackEvent = (action, payload = {}) => {
-    const room = roomManager.findRoomBySocketId(socket.id);
-    if (!room) return;
-
-    const participant = room.getParticipant(socket.id);
-    if (!participant || !participant.canControlPlayback()) {
-      return socket.emit('error_message', 'Permission denied');
-    }
-
-    room.updatePlayback(action, payload);
-    io.to(room.roomId).emit(action, payload);
-  };
-
-  socket.on('play', () => handlePlaybackEvent('play'));
-  socket.on('pause', () => handlePlaybackEvent('pause'));
-  socket.on('seek', (data) => handlePlaybackEvent('seek', data));
-  socket.on('change_video', (data) => handlePlaybackEvent('change_video', data));
-
-  // Role Assignment
-  socket.on('assign_role', ({ targetUserId, newRole }) => {
-    const room = roomManager.findRoomBySocketId(socket.id);
-    if (!room) return;
-
-    const sender = room.getParticipant(socket.id);
-    if (!sender || !sender.isHost()) return;
-
-    const target = room.getParticipant(targetUserId);
-    if (target) {
-      target.role = newRole;
-      io.to(room.roomId).emit('role_assigned', {
-        userId: targetUserId,
-        role: newRole,
-        participants: room.getParticipantList()
+    if (!rooms.has(roomId)) {
+      // First person to join/create becomes the HOST
+      rooms.set(roomId, {
+        roomId,
+        hostId: socket.id,
+        videoId: null,
+        currentTime: 0,
+        isPlaying: false,
+        participants: [{ socketId: socket.id, username, role: 'HOST' }]
       });
-    }
-  });
-
-  // Host Transfer
-  socket.on('transfer_host', ({ targetUserId }) => {
-    const room = roomManager.findRoomBySocketId(socket.id);
-    if (!room) return;
-
-    const sender = room.getParticipant(socket.id);
-    if (!sender || !sender.isHost()) return;
-
-    const target = room.getParticipant(targetUserId);
-    if (target) {
-      sender.role = 'PARTICIPANT';
-      target.role = 'HOST';
-
-      io.to(room.roomId).emit('role_assigned', {
-        userId: targetUserId,
-        role: 'HOST',
-        participants: room.getParticipantList()
-      });
-    }
-  });
-
-  // Remove Participant
-  socket.on('remove_participant', ({ targetUserId }) => {
-    const room = roomManager.findRoomBySocketId(socket.id);
-    if (!room) return;
-
-    const sender = room.getParticipant(socket.id);
-    if (!sender || !sender.isHost()) return;
-
-    room.removeParticipant(targetUserId);
-    io.to(room.roomId).emit('participant_removed', {
-      userId: targetUserId,
-      participants: room.getParticipantList()
-    });
-
-    const targetSocket = io.sockets.sockets.get(targetUserId);
-    if (targetSocket) targetSocket.leave(room.roomId);
-  });
-
-  // Real-Time Chat & Floating Reactions
-  socket.on('send_chat', ({ roomId, message, username }) => {
-    if (!message || !message.trim()) return;
-    io.to(roomId).emit('new_chat', {
-      id: Date.now() + Math.random().toString(),
-      userId: socket.id,
-      username,
-      message: message.trim(),
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    });
-  });
-
-  socket.on('send_reaction', ({ roomId, emoji, username }) => {
-    io.to(roomId).emit('new_reaction', {
-      id: Date.now() + Math.random(),
-      emoji,
-      username
-    });
-  });
-
-  
-
-  // User Disconnect with Host Auto-Migration
-  const handleUserExit = (socket) => {
-    const room = roomManager.findRoomBySocketId(socket.id);
-    if (!room) return;
-
-    const leavingUser = room.getParticipant(socket.id);
-    room.removeParticipant(socket.id);
-    socket.leave(room.roomId);
-
-    if (room.participants.size === 0) {
-      roomManager.deleteRoom(room.roomId);
     } else {
-      // If the Host left, automatically assign Host to the next remaining participant
-      if (leavingUser && leavingUser.isHost()) {
-        const nextParticipant = room.participants.values().next().value;
-        if (nextParticipant) {
-          nextParticipant.role = 'HOST';
-          io.to(room.roomId).emit('role_assigned', {
-            userId: nextParticipant.userId,
-            role: 'HOST',
-            participants: room.getParticipantList()
-          });
-        }
+      const room = rooms.get(roomId);
+      const hasHost = room.participants.some((p) => p.role === 'HOST');
+      const role = hasHost ? 'PARTICIPANT' : 'HOST';
+      if (role === 'HOST') room.hostId = socket.id;
+
+      // Avoid duplicate socket entries
+      room.participants = room.participants.filter((p) => p.socketId !== socket.id);
+      room.participants.push({ socketId: socket.id, username, role });
+    }
+
+    const currentRoom = rooms.get(roomId);
+    const currentUser = currentRoom.participants.find((p) => p.socketId === socket.id);
+
+    // Send complete state + assigned role directly to the joining user
+    socket.emit('room_state', {
+      ...currentRoom,
+      myRole: currentUser ? currentUser.role : 'PARTICIPANT'
+    });
+
+    // Broadcast updated participant list to everyone in the room
+    io.to(roomId).emit('participants_updated', currentRoom.participants);
+  });
+
+  // 2. Playback Synchronization (Play, Pause, Seek)
+  socket.on('video_action', ({ roomId, action, currentTime, videoId }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+
+    const sender = room.participants.find((p) => p.socketId === socket.id);
+    if (!sender || (sender.role !== 'HOST' && sender.role !== 'MODERATOR')) {
+      return socket.emit('error_msg', 'Only the Host or Moderators can control playback.');
+    }
+
+    if (videoId) room.videoId = videoId;
+    if (currentTime !== undefined) room.currentTime = currentTime;
+    if (action === 'play') room.isPlaying = true;
+    if (action === 'pause') room.isPlaying = false;
+
+    socket.to(roomId).emit('sync_action', {
+      action,
+      currentTime,
+      videoId: room.videoId
+    });
+  });
+
+  // 3. Video Selection Change
+  socket.on('change_video', ({ roomId, videoId }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+
+    const sender = room.participants.find((p) => p.socketId === socket.id);
+    if (!sender || (sender.role !== 'HOST' && sender.role !== 'MODERATOR')) {
+      return socket.emit('error_msg', 'Only the Host or Moderators can change the video.');
+    }
+
+    room.videoId = videoId;
+    room.currentTime = 0;
+    room.isPlaying = false;
+
+    io.to(roomId).emit('change_video', { videoId });
+  });
+
+  // 4. Manual Leave Room
+  socket.on('leave_room', ({ roomId }) => {
+    if (!roomId || !rooms.has(roomId)) return;
+    const room = rooms.get(roomId);
+    socket.leave(roomId);
+
+    const index = room.participants.findIndex((p) => p.socketId === socket.id);
+    if (index !== -1) {
+      const leavingUser = room.participants[index];
+      room.participants.splice(index, 1);
+
+      // Promote next participant if Host leaves
+      if (leavingUser.role === 'HOST' && room.participants.length > 0) {
+        room.participants[0].role = 'HOST';
+        room.hostId = room.participants[0].socketId;
+        io.to(room.participants[0].socketId).emit('role_promoted', { role: 'HOST' });
       }
 
-      io.to(room.roomId).emit('user_left', {
-        userId: socket.id,
-        username: leavingUser?.username,
-        participants: room.getParticipantList()
-      });
+      io.to(roomId).emit('participants_updated', room.participants);
+
+      if (room.participants.length === 0) {
+        rooms.delete(roomId);
+      }
     }
-  };
-
-  // Explicit Leave Event (triggered by the Leave Room button)
-  socket.on('leave_room', () => {
-    handleUserExit(socket);
   });
 
-  // Disconnect Event (triggered by closing the browser tab)
+  // 5. Handle Disconnect / Connection Drop
   socket.on('disconnect', () => {
-    handleUserExit(socket);
-  });
-  }); 
-async function startServer() {
-  try {
-    await Promise.all([pubClient.connect(), subClient.connect()]);
-    io.adapter(createAdapter(pubClient, subClient));
-    console.log('✅ Connected to Redis Pub/Sub Adapter');
-  } catch (error) {
-    console.warn('⚠️ Redis connection failed, running with default memory adapter:', error.message);
-  }
+    rooms.forEach((room, roomId) => {
+      const index = room.participants.findIndex((p) => p.socketId === socket.id);
+      if (index !== -1) {
+        const leavingUser = room.participants[index];
+        room.participants.splice(index, 1);
 
-  const PORT = process.env.PORT || 5001;
-  server.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
-  });
-}
+        // Host Migration
+        if (leavingUser.role === 'HOST' && room.participants.length > 0) {
+          room.participants[0].role = 'HOST';
+          room.hostId = room.participants[0].socketId;
+          io.to(room.participants[0].socketId).emit('role_promoted', { role: 'HOST' });
+        }
 
-startServer();
+        io.to(roomId).emit('participants_updated', room.participants);
+
+        if (room.participants.length === 0) {
+          rooms.delete(roomId);
+        }
+      }
+    });
+  });
+});
+
+const PORT = process.env.PORT || 5001;
+server.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
+});
