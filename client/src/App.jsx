@@ -5,9 +5,12 @@ import Controls from './components/Controls';
 import Sidebar from './components/Sidebar';
 import './App.css';
 
+// Automatically connects to localhost:5001 during local development, and Render in production
 const SOCKET_SERVER_URL =
   import.meta.env.VITE_BACKEND_URL ||
-  'https://youtube-watch-party-system-sg19.onrender.com';
+  (typeof window !== 'undefined' && window.location.hostname === 'localhost'
+    ? 'http://localhost:5001'
+    : 'https://youtube-watch-party-system-sg19.onrender.com');
 
 const socket = io(SOCKET_SERVER_URL, {
   transports: ['websocket', 'polling'],
@@ -21,11 +24,13 @@ export default function App() {
   const [userRole, setUserRole] = useState('PARTICIPANT');
   const [participants, setParticipants] = useState([]);
   const [videoId, setVideoId] = useState(null);
+  const [currentSocketId, setCurrentSocketId] = useState('');
 
   const syncUserRole = (list) => {
-    if (!list || !socket.id) return;
+    if (!list) return;
+    const myId = socket.id || currentSocketId;
     const me = list.find(
-      (p) => p.socketId === socket.id || p.userId === socket.id || p.username === username
+      (p) => (p.socketId && p.socketId === myId) || (p.username && p.username === username)
     );
     if (me && me.role) {
       setUserRole(me.role);
@@ -33,12 +38,21 @@ export default function App() {
   };
 
   useEffect(() => {
+    const onConnect = () => {
+      setCurrentSocketId(socket.id);
+      if (joined && roomId && username) {
+        socket.emit('join_room', { roomId, username });
+      }
+    };
+
+    socket.on('connect', onConnect);
+
     const handleRoomState = (state) => {
       if (state.videoId) setVideoId(state.videoId);
       if (state.myRole) setUserRole(state.myRole);
       if (state.role) setUserRole(state.role);
 
-      const list = state.participants || state.members || [];
+      const list = state.participants || [];
       if (list.length > 0) {
         setParticipants(list);
         syncUserRole(list);
@@ -51,26 +65,13 @@ export default function App() {
       syncUserRole(list);
     };
 
-    const handleRoleAssigned = ({ userId, socketId, role, participants: updatedList }) => {
-      if (updatedList) {
-        setParticipants(updatedList);
-        syncUserRole(updatedList);
-      }
-      if (userId === socket.id || socketId === socket.id) {
-        setUserRole(role);
-      }
-    };
-
     const handleRolePromoted = ({ role }) => {
       if (role) setUserRole(role);
     };
 
-    const handleParticipantRemoved = ({ userId, socketId, participants: updatedList }) => {
-      if (updatedList) {
-        setParticipants(updatedList);
-        syncUserRole(updatedList);
-      }
-      if (userId === socket.id || socketId === socket.id) {
+    const handleParticipantRemoved = ({ socketId, username: kickedUsername }) => {
+      const myId = socket.id || currentSocketId;
+      if (socketId === myId || kickedUsername === username) {
         alert('You have been removed from the watch party.');
         setJoined(false);
         setVideoId(null);
@@ -85,27 +86,20 @@ export default function App() {
     };
 
     socket.on('room_state', handleRoomState);
-    socket.on('sync_state', handleRoomState);
     socket.on('participants_updated', handleParticipantsUpdate);
-    socket.on('user_joined', handleParticipantsUpdate);
-    socket.on('user_left', handleParticipantsUpdate);
-    socket.on('role_assigned', handleRoleAssigned);
     socket.on('role_promoted', handleRolePromoted);
     socket.on('participant_removed', handleParticipantRemoved);
     socket.on('change_video', handleVideoChange);
 
     return () => {
+      socket.off('connect', onConnect);
       socket.off('room_state', handleRoomState);
-      socket.off('sync_state', handleRoomState);
       socket.off('participants_updated', handleParticipantsUpdate);
-      socket.off('user_joined', handleParticipantsUpdate);
-      socket.off('user_left', handleParticipantsUpdate);
-      socket.off('role_assigned', handleRoleAssigned);
       socket.off('role_promoted', handleRolePromoted);
       socket.off('participant_removed', handleParticipantRemoved);
       socket.off('change_video', handleVideoChange);
     };
-  }, [username]);
+  }, [joined, roomId, username, currentSocketId]);
 
   const handleJoin = (e) => {
     e.preventDefault();
@@ -177,7 +171,6 @@ export default function App() {
 
   return (
     <div className="room-container">
-      {/* Top Navbar */}
       <header className="room-navbar">
         <div className="nav-brand">
           <h2>Watch Party</h2>
@@ -197,7 +190,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Layout */}
       <main className="room-main-layout">
         <section className="video-column">
           <div className="player-container">
@@ -220,7 +212,7 @@ export default function App() {
 
         <Sidebar
           participants={participants}
-          currentUserId={socket.id}
+          currentUserId={socket.id || currentSocketId}
           isHost={userRole === 'HOST'}
           userRole={userRole}
           socket={socket}

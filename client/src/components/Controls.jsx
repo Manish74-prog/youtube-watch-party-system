@@ -1,57 +1,105 @@
 import React, { useState } from 'react';
 
-export default function Controls({ socket, userRole, onVideoChange }) {
-  const [url, setUrl] = useState('');
-  const canControl = userRole === 'HOST' || userRole === 'MODERATOR';
+export default function Controls({ socket, roomId, canControl, onVideoChange }) {
+  const [urlInput, setUrlInput] = useState('');
 
-  const extractVideoId = (inputUrl) => {
-    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
-    const match = inputUrl.match(regExp);
-    return (match && match[2].length === 11) ? match[2] : null;
+  const extractVideoId = (url) => {
+    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=[^#&?]*|&v=[^#&?]*)([^#&?]*).*/;
+    const match = url.match(regExp);
+    if (match && match[2] && match[2].length === 11) return match[2];
+    if (url.trim().length === 11) return url.trim();
+    const vParam = new URLSearchParams(url.split('?')[1] || '').get('v');
+    return vParam || url.trim();
   };
 
   const handleLoadVideo = (e) => {
     e.preventDefault();
-    const id = extractVideoId(url);
-    if (!id) {
-      alert('Please enter a valid YouTube link (e.g., https://www.youtube.com/watch?v=...)');
-      return;
+    if (!urlInput.trim()) return;
+
+    const id = extractVideoId(urlInput);
+    if (!id) return;
+
+    if (onVideoChange) onVideoChange(id);
+
+    if (socket && roomId) {
+      socket.emit('change_video', { roomId, videoId: id });
     }
-    onVideoChange(id);
-    socket.emit('change_video', { videoId: id });
-    setUrl('');
+
+    setUrlInput('');
   };
 
-  const handlePlay = () => socket.emit('play');
-  const handlePause = () => socket.emit('pause');
-  const handleSeek = (offset) => socket.emit('seek', { offset });
-
-  if (!canControl) {
-    return (
-      <div className="view-only-banner">
-        🔒 <strong>View-Only Mode:</strong> Only the Host and Moderators can change videos or control playback.
-      </div>
-    );
-  }
+  const sendAction = (action, offset = 0) => {
+    if (!canControl || !socket || !roomId) return;
+    socket.emit('video_action', { roomId, action, offset });
+  };
 
   return (
-    <div className="controls-container">
-      <form onSubmit={handleLoadVideo} className="url-input-box">
-        <input
-          type="text"
-          placeholder="Paste any YouTube video link (e.g. https://www.youtube.com/watch?v=...)"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-        />
-        <button type="submit" className="btn-load">Load Video</button>
-      </form>
+    <div className="controls-panel" style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      {canControl ? (
+        <>
+          <form onSubmit={handleLoadVideo} style={{ display: 'flex', gap: '8px' }}>
+            <input
+              type="text"
+              placeholder="Paste YouTube Video URL (e.g. https://www.youtube.com/watch?v=...)"
+              value={urlInput}
+              onChange={(e) => setUrlInput(e.target.value)}
+              style={{
+                flex: 1,
+                padding: '10px 14px',
+                borderRadius: '6px',
+                border: '1px solid #374151',
+                background: '#1f2937',
+                color: '#fff',
+              }}
+            />
+            <button
+              type="submit"
+              style={{
+                padding: '10px 20px',
+                background: '#3b82f6',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+              }}
+            >
+              Load Video
+            </button>
+          </form>
 
-      <div className="playback-btn-group">
-        <button className="btn-ctrl" onClick={handlePlay}>▶ Play</button>
-        <button className="btn-ctrl" onClick={handlePause}>⏸ Pause</button>
-        <button className="btn-ctrl" onClick={() => handleSeek(-10)}>⏪ -10s</button>
-        <button className="btn-ctrl" onClick={() => handleSeek(10)}>⏩ +10s</button>
-      </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              onClick={() => sendAction('play')}
+              style={{ padding: '8px 18px', background: '#10b981', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
+            >
+              ▶ Play
+            </button>
+            <button
+              onClick={() => sendAction('pause')}
+              style={{ padding: '8px 18px', background: '#f59e0b', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
+            >
+              ⏸ Pause
+            </button>
+            <button
+              onClick={() => sendAction('seek', -10)}
+              style={{ padding: '8px 18px', background: '#374151', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
+            >
+              ⏪ -10s
+            </button>
+            <button
+              onClick={() => sendAction('seek', 10)}
+              style={{ padding: '8px 18px', background: '#374151', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
+            >
+              ⏩ +10s
+            </button>
+          </div>
+        </>
+      ) : (
+        <div style={{ padding: '12px', background: '#1f2937', borderRadius: '6px', color: '#9ca3af', fontSize: '14px', textAlign: 'center', border: '1px solid #374151' }}>
+          🔒 <strong>View-Only Mode:</strong> Only the Host and Moderators can control video playback.
+        </div>
+      )}
     </div>
   );
 }
