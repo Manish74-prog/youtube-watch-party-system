@@ -1,8 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { io } from 'socket.io-client';
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
-
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://youtube-watch-party-system-sg19.onrender.com';
 export function usePartySocket(roomId, username) {
   const [socket, setSocket] = useState(null);
   const [participants, setParticipants] = useState([]);
