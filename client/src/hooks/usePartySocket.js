@@ -2,12 +2,14 @@ import { useEffect, useState, useRef } from 'react';
 import { io } from 'socket.io-client';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://youtube-watch-party-system-sg19.onrender.com';
+
 export function usePartySocket(roomId, username) {
   const [socket, setSocket] = useState(null);
   const [participants, setParticipants] = useState([]);
   const [userRole, setUserRole] = useState('PARTICIPANT');
   const [videoId, setVideoId] = useState('dQw4w9WgXcQ');
   const [errorMessage, setErrorMessage] = useState('');
+  const [messages, setMessages] = useState([]);
 
   useEffect(() => {
     if (!roomId || !username) return;
@@ -15,59 +17,42 @@ export function usePartySocket(roomId, username) {
     const s = io(BACKEND_URL);
     setSocket(s);
 
-    s.emit('join_room', { roomId, username });
+    s.emit('join-room', { roomId, username });
 
-    socket.on('room-joined', ({ roomState, user }) => {
-  // Save your assigned role directly from the server response
-  if (user && user.role) {
-    setUserRole(user.role);
-  }
-});
-
-socket.on('sync-state', (roomState) => {
-  // If the server sends the full members list, find yourself by socket ID
-  const currentUser = roomState.members?.find((m) => m.socketId === socket.id);
-  if (currentUser) {
-    setUserRole(currentUser.role);
-  }
-});
-
-    s.on('user_joined', (data) => {
-      setParticipants(data.participants);
-      if (data.userId === s.id) setUserRole(data.role);
-    });
-
-    s.on('role_assigned', (data) => {
-      setParticipants(data.participants);
-      if (data.userId === s.id) setUserRole(data.role);
-    });
-
-    s.on('participant_removed', (data) => {
-      if (data.userId === s.id) {
-        alert('You have been removed from the room.');
-        window.location.reload();
-      } else {
-        setParticipants(data.participants);
+    s.on('room-state', (state) => {
+      if (state.videoId) setVideoId(state.videoId);
+      if (state.members) {
+        setParticipants(state.members);
+        const me = state.members.find((m) => m.socketId === s.id || m.username === username);
+        if (me && me.role) setUserRole(me.role);
       }
     });
 
-    s.on('user_left', (data) => {
-      setParticipants(data.participants);
+    s.on('user-joined', ({ members }) => {
+      if (members) setParticipants(members);
     });
 
-    s.on('change_video', ({ videoId: newId }) => {
-      setVideoId(newId);
+    s.on('role-updated', ({ socketId, role }) => {
+      if (socketId === s.id) setUserRole(role);
     });
 
-    s.on('error_message', (msg) => {
+    s.on('error-msg', (msg) => {
       setErrorMessage(msg);
-      setTimeout(() => setErrorMessage(''), 3000);
+      setTimeout(() => setErrorMessage(''), 4000);
     });
 
-
-
-    return () => s.disconnect();
+    return () => {
+      s.disconnect();
+    };
   }, [roomId, username]);
 
-  return { socket, participants, userRole, videoId, setVideoId, errorMessage };
+  return {
+    socket,
+    participants,
+    userRole,
+    videoId,
+    setVideoId,
+    errorMessage,
+    messages,
+  };
 }
